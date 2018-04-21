@@ -26,6 +26,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.EventLoop;
@@ -391,6 +392,73 @@ public class LocalChannelTest {
     }
 
     @Test
+    public void testCloseAfterWriteInSameEventLoopPreservesOrder() throws InterruptedException {
+        Bootstrap cb = new Bootstrap();
+        ServerBootstrap sb = new ServerBootstrap();
+        final CountDownLatch messageLatch = new CountDownLatch(3);
+        final ByteBuf data = Unpooled.wrappedBuffer(new byte[1024]);
+
+        try {
+            cb.group(sharedGroup)
+                    .channel(LocalChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void channelActive(ChannelHandlerContext ctx) throws Exception {
+                            ctx.writeAndFlush(data.retainedDuplicate());
+                        }
+
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                            if (data.equals(msg)) {
+                                ReferenceCountUtil.safeRelease(msg);
+                                messageLatch.countDown();
+                            } else {
+                                super.channelRead(ctx, msg);
+                            }
+                        }
+                    });
+
+            sb.group(sharedGroup)
+                    .channel(LocalServerChannel.class)
+                    .childHandler(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                            if (data.equals(msg)) {
+                                messageLatch.countDown();
+                                ctx.writeAndFlush(data);
+                                ctx.close();
+                            } else {
+                                super.channelRead(ctx, msg);
+                            }
+                        }
+
+                        @Override
+                        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+                            messageLatch.countDown();
+                            super.channelInactive(ctx);
+                        }
+                    });
+
+            Channel sc = null;
+            Channel cc = null;
+            try {
+                // Start server
+                sc = sb.bind(TEST_ADDRESS).syncUninterruptibly().channel();
+
+                // Connect to the server
+                cc = cb.connect(sc.localAddress()).syncUninterruptibly().channel();
+                assertTrue(messageLatch.await(5, SECONDS));
+                assertFalse(cc.isOpen());
+            } finally {
+                closeChannel(cc);
+                closeChannel(sc);
+            }
+        } finally {
+            data.release();
+        }
+    }
+
+    @Test
     public void testWriteInWritePromiseCompletePreservesOrder() throws InterruptedException {
         Bootstrap cb = new Bootstrap();
         ServerBootstrap sb = new ServerBootstrap();
@@ -621,85 +689,6 @@ public class LocalChannelTest {
     }
 
     @Test
-    public void testClosePeerInWritePromiseCompleteSameEventLoopPreservesOrder() throws InterruptedException {
-        Bootstrap cb = new Bootstrap();
-        ServerBootstrap sb = new ServerBootstrap();
-        final CountDownLatch messageLatch = new CountDownLatch(2);
-        final CountDownLatch serverChannelLatch = new CountDownLatch(1);
-        final ByteBuf data = Unpooled.wrappedBuffer(new byte[1024]);
-        final AtomicReference<Channel> serverChannelRef = new AtomicReference<Channel>();
-
-        try {
-            cb.group(sharedGroup)
-            .channel(LocalChannel.class)
-            .handler(new TestHandler());
-
-            sb.group(sharedGroup)
-            .channel(LocalServerChannel.class)
-            .childHandler(new ChannelInitializer<LocalChannel>() {
-                @Override
-                public void initChannel(LocalChannel ch) throws Exception {
-                    ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
-                        @Override
-                        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-                            if (msg.equals(data)) {
-                                ReferenceCountUtil.safeRelease(msg);
-                                messageLatch.countDown();
-                            } else {
-                                super.channelRead(ctx, msg);
-                            }
-                        }
-                        @Override
-                        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-                            messageLatch.countDown();
-                            super.channelInactive(ctx);
-                        }
-                    });
-                    serverChannelRef.set(ch);
-                    serverChannelLatch.countDown();
-                }
-            });
-
-            Channel sc = null;
-            Channel cc = null;
-            try {
-                // Start server
-                sc = sb.bind(TEST_ADDRESS).syncUninterruptibly().channel();
-
-                // Connect to the server
-                cc = cb.connect(sc.localAddress()).syncUninterruptibly().channel();
-
-                assertTrue(serverChannelLatch.await(5, SECONDS));
-
-                final Channel ccCpy = cc;
-                // Make sure a write operation is executed in the eventloop
-                cc.pipeline().lastContext().executor().execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        ChannelPromise promise = ccCpy.newPromise();
-                        promise.addListener(new ChannelFutureListener() {
-                            @Override
-                            public void operationComplete(ChannelFuture future) throws Exception {
-                                serverChannelRef.get().close();
-                            }
-                        });
-                        ccCpy.writeAndFlush(data.retainedDuplicate(), promise);
-                    }
-                });
-
-                assertTrue(messageLatch.await(5, SECONDS));
-                assertFalse(cc.isOpen());
-                assertFalse(serverChannelRef.get().isOpen());
-            } finally {
-                closeChannel(cc);
-                closeChannel(sc);
-            }
-        } finally {
-            data.release();
-        }
-    }
-
-    @Test
     public void testWriteWhilePeerIsClosedReleaseObjectAndFailPromise() throws InterruptedException {
         Bootstrap cb = new Bootstrap();
         ServerBootstrap sb = new ServerBootstrap();
@@ -892,8 +881,143 @@ public class LocalChannelTest {
     static class TestHandler extends ChannelInboundHandlerAdapter {
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-            logger.info(String.format("Received mesage: %s", msg));
+            logger.info(String.format("Received message: %s", msg));
             ReferenceCountUtil.safeRelease(msg);
+        }
+    }
+
+    @Test
+    public void testNotLeakBuffersWhenCloseByRemotePeer() throws Exception {
+        Bootstrap cb = new Bootstrap();
+        ServerBootstrap sb = new ServerBootstrap();
+
+        cb.group(sharedGroup)
+                .channel(LocalChannel.class)
+                .handler(new SimpleChannelInboundHandler<ByteBuf>() {
+                    @Override
+                    public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+                        ctx.writeAndFlush(ctx.alloc().buffer().writeZero(100));
+                    }
+
+                    @Override
+                    public void channelRead0(ChannelHandlerContext ctx, ByteBuf buffer) throws Exception {
+                        // Just drop the buffer
+                    }
+                });
+
+        sb.group(sharedGroup)
+                .channel(LocalServerChannel.class)
+                .childHandler(new ChannelInitializer<LocalChannel>() {
+                    @Override
+                    public void initChannel(LocalChannel ch) throws Exception {
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
+
+                            @Override
+                            public void channelRead0(ChannelHandlerContext ctx, ByteBuf buffer) throws Exception {
+                                while (buffer.isReadable()) {
+                                    // Fill the ChannelOutboundBuffer with multiple buffers
+                                    ctx.write(buffer.readRetainedSlice(1));
+                                }
+                                // Flush and so transfer the written buffers to the inboundBuffer of the remote peer.
+                                // After this point the remote peer is responsible to release all the buffers.
+                                ctx.flush();
+                                // This close call will trigger the remote peer close as well.
+                                ctx.close();
+                            }
+                        });
+                    }
+                });
+
+        Channel sc = null;
+        LocalChannel cc = null;
+        try {
+            // Start server
+            sc = sb.bind(TEST_ADDRESS).sync().channel();
+
+            // Connect to the server
+            cc = (LocalChannel) cb.connect(sc.localAddress()).sync().channel();
+
+            // Close the channel
+            closeChannel(cc);
+            assertTrue(cc.inboundBuffer.isEmpty());
+            closeChannel(sc);
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
+        }
+    }
+
+    private static void writeAndFlushReadOnSuccess(final ChannelHandlerContext ctx, Object msg) {
+        ctx.writeAndFlush(msg).addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) {
+                if (future.isSuccess()) {
+                    ctx.read();
+                }
+            }
+        });
+    }
+
+    @Test(timeout = 5000)
+    public void testAutoReadDisabledSharedGroup() throws Exception {
+        testAutoReadDisabled(sharedGroup, sharedGroup);
+    }
+
+    @Test(timeout = 5000)
+    public void testAutoReadDisabledDifferentGroup() throws Exception {
+        testAutoReadDisabled(group1, group2);
+    }
+
+    private static void testAutoReadDisabled(EventLoopGroup serverGroup, EventLoopGroup clientGroup) throws Exception {
+        final CountDownLatch latch = new CountDownLatch(100);
+        Bootstrap cb = new Bootstrap();
+        ServerBootstrap sb = new ServerBootstrap();
+
+        cb.group(serverGroup)
+                .channel(LocalChannel.class)
+                .option(ChannelOption.AUTO_READ, false)
+                .handler(new ChannelInboundHandlerAdapter() {
+
+                    @Override
+                    public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+                        writeAndFlushReadOnSuccess(ctx, "test");
+                    }
+
+                    @Override
+                    public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
+                        writeAndFlushReadOnSuccess(ctx, msg);
+                    }
+                });
+
+        sb.group(clientGroup)
+                .channel(LocalServerChannel.class)
+                .childOption(ChannelOption.AUTO_READ, false)
+                .childHandler(new ChannelInboundHandlerAdapter() {
+                    @Override
+                    public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+                        ctx.read();
+                    }
+
+                    @Override
+                    public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
+                        latch.countDown();
+                        if (latch.getCount() > 0) {
+                            writeAndFlushReadOnSuccess(ctx, msg);
+                        }
+                    }
+                });
+
+        Channel sc = null;
+        Channel cc = null;
+        try {
+            // Start server
+            sc = sb.bind(TEST_ADDRESS).sync().channel();
+            cc = cb.connect(TEST_ADDRESS).sync().channel();
+
+            latch.await();
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
         }
     }
 }

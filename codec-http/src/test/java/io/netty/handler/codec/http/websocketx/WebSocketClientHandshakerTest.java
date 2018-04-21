@@ -25,11 +25,12 @@ import io.netty.handler.codec.http.EmptyHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpClientCodec;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpRequestEncoder;
 import io.netty.handler.codec.http.HttpResponseDecoder;
 import io.netty.util.CharsetUtil;
-import io.netty.util.internal.ThreadLocalRandom;
+import io.netty.util.internal.PlatformDependent;
 import org.junit.Test;
 
 import java.net.URI;
@@ -40,13 +41,154 @@ import static org.junit.Assert.assertTrue;
 public abstract class WebSocketClientHandshakerTest {
     protected abstract WebSocketClientHandshaker newHandshaker(URI uri);
 
+    protected abstract CharSequence getOriginHeaderName();
+
     @Test
+    public void hostHeaderWs() {
+        for (String scheme : new String[]{"ws://", "http://"}) {
+            for (String host : new String[]{"localhost", "127.0.0.1", "[::1]", "Netty.io"}) {
+                String enter = scheme + host;
+
+                testHostHeader(enter, host);
+                testHostHeader(enter + '/', host);
+                testHostHeader(enter + ":80", host);
+                testHostHeader(enter + ":443", host + ":443");
+                testHostHeader(enter + ":9999", host + ":9999");
+                testHostHeader(enter + "/path", host);
+                testHostHeader(enter + ":80/path", host);
+                testHostHeader(enter + ":443/path", host + ":443");
+                testHostHeader(enter + ":9999/path", host + ":9999");
+            }
+        }
+    }
+
+    @Test
+    public void hostHeaderWss() {
+        for (String scheme : new String[]{"wss://", "https://"}) {
+            for (String host : new String[]{"localhost", "127.0.0.1", "[::1]", "Netty.io"}) {
+                String enter = scheme + host;
+
+                testHostHeader(enter, host);
+                testHostHeader(enter + '/', host);
+                testHostHeader(enter + ":80", host + ":80");
+                testHostHeader(enter + ":443", host);
+                testHostHeader(enter + ":9999", host + ":9999");
+                testHostHeader(enter + "/path", host);
+                testHostHeader(enter + ":80/path", host + ":80");
+                testHostHeader(enter + ":443/path", host);
+                testHostHeader(enter + ":9999/path", host + ":9999");
+            }
+        }
+    }
+
+    @Test
+    public void hostHeaderWithoutScheme() {
+        testHostHeader("//localhost/", "localhost");
+        testHostHeader("//localhost/path", "localhost");
+        testHostHeader("//localhost:80/", "localhost:80");
+        testHostHeader("//localhost:443/", "localhost:443");
+        testHostHeader("//localhost:9999/", "localhost:9999");
+    }
+
+    @Test
+    public void originHeaderWs() {
+        for (String scheme : new String[]{"ws://", "http://"}) {
+            for (String host : new String[]{"localhost", "127.0.0.1", "[::1]", "NETTY.IO"}) {
+                String enter = scheme + host;
+                String expect = "http://" + host.toLowerCase();
+
+                testOriginHeader(enter, expect);
+                testOriginHeader(enter + '/', expect);
+                testOriginHeader(enter + ":80", expect);
+                testOriginHeader(enter + ":443", expect + ":443");
+                testOriginHeader(enter + ":9999", expect + ":9999");
+                testOriginHeader(enter + "/path%20with%20ws", expect);
+                testOriginHeader(enter + ":80/path%20with%20ws", expect);
+                testOriginHeader(enter + ":443/path%20with%20ws", expect + ":443");
+                testOriginHeader(enter + ":9999/path%20with%20ws", expect + ":9999");
+            }
+        }
+    }
+
+    @Test
+    public void originHeaderWss() {
+        for (String scheme : new String[]{"wss://", "https://"}) {
+            for (String host : new String[]{"localhost", "127.0.0.1", "[::1]", "NETTY.IO"}) {
+                String enter = scheme + host;
+                String expect = "https://" + host.toLowerCase();
+
+                testOriginHeader(enter, expect);
+                testOriginHeader(enter + '/', expect);
+                testOriginHeader(enter + ":80", expect + ":80");
+                testOriginHeader(enter + ":443", expect);
+                testOriginHeader(enter + ":9999", expect + ":9999");
+                testOriginHeader(enter + "/path%20with%20ws", expect);
+                testOriginHeader(enter + ":80/path%20with%20ws", expect + ":80");
+                testOriginHeader(enter + ":443/path%20with%20ws", expect);
+                testOriginHeader(enter + ":9999/path%20with%20ws", expect + ":9999");
+            }
+        }
+    }
+
+    @Test
+    public void originHeaderWithoutScheme() {
+        testOriginHeader("//localhost/", "http://localhost");
+        testOriginHeader("//localhost/path", "http://localhost");
+
+        // http scheme by port
+        testOriginHeader("//localhost:80/", "http://localhost");
+        testOriginHeader("//localhost:80/path", "http://localhost");
+
+        // https scheme by port
+        testOriginHeader("//localhost:443/", "https://localhost");
+        testOriginHeader("//localhost:443/path", "https://localhost");
+
+        // http scheme for non standard port
+        testOriginHeader("//localhost:9999/", "http://localhost:9999");
+        testOriginHeader("//localhost:9999/path", "http://localhost:9999");
+
+        // convert host to lower case
+        testOriginHeader("//LOCALHOST/", "http://localhost");
+    }
+
+    private void testHostHeader(String uri, String expected) {
+        testHeaderDefaultHttp(uri, HttpHeaderNames.HOST, expected);
+    }
+
+    private void testOriginHeader(String uri, String expected) {
+        testHeaderDefaultHttp(uri, getOriginHeaderName(), expected);
+    }
+
+    protected void testHeaderDefaultHttp(String uri, CharSequence header, String expectedValue) {
+        WebSocketClientHandshaker handshaker = newHandshaker(URI.create(uri));
+        FullHttpRequest request = handshaker.newHandshakeRequest();
+        try {
+            assertEquals(expectedValue, request.headers().get(header));
+        } finally {
+            request.release();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
     public void testRawPath() {
         URI uri = URI.create("ws://localhost:9999/path%20with%20ws");
         WebSocketClientHandshaker handshaker = newHandshaker(uri);
         FullHttpRequest request = handshaker.newHandshakeRequest();
         try {
             assertEquals("/path%20with%20ws", request.getUri());
+        } finally {
+            request.release();
+        }
+    }
+
+    @Test
+    public void testRawPathWithQuery() {
+        URI uri = URI.create("ws://localhost:9999/path%20with%20ws?a=b%20c");
+        WebSocketClientHandshaker handshaker = newHandshaker(uri);
+        FullHttpRequest request = handshaker.newHandshakeRequest();
+        try {
+            assertEquals("/path%20with%20ws?a=b%20c", request.uri());
         } finally {
             request.release();
         }
@@ -90,7 +232,7 @@ public abstract class WebSocketClientHandshakerTest {
         };
 
         byte[] data = new byte[24];
-        ThreadLocalRandom.current().nextBytes(data);
+        PlatformDependent.threadLocalRandom().nextBytes(data);
 
         // Create a EmbeddedChannel which we will use to encode a BinaryWebsocketFrame to bytes and so use these
         // to test the actual handshaker.
