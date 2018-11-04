@@ -20,7 +20,7 @@
   <parent>
     <groupId>io.netty</groupId>
     <artifactId>netty-parent</artifactId>
-    <version>4.1.28.Final-SNAPSHOT</version>
+    <version>4.1.32.Final-SNAPSHOT</version>
   </parent>
 
   <artifactId>netty-testsuite-shading</artifactId>
@@ -34,6 +34,8 @@
     <classesShadedDir>${project.build.directory}/classes-shaded</classesShadedDir>
     <classesShadedNativeDir>${classesShadedDir}/META-INF/native</classesShadedNativeDir>
     <shadingPrefix>shaded</shadingPrefix>
+    <shadingPrefix2>shaded2</shadingPrefix2>
+
     <jarName>${project.artifactId}-${project.version}.jar</jarName>
     <shadedPackagePrefix>io.netty.</shadedPackagePrefix>
   </properties>
@@ -71,7 +73,7 @@
         </os>
       </activation>
       <properties>
-        <nativeLib>netty_transport_native_kqueue_${os.detected.arch}.jnilib</nativeLib>
+        <nativeTransportLib>netty_transport_native_kqueue_${os.detected.arch}.jnilib</nativeTransportLib>
       </properties>
       <dependencies>
         <dependency>
@@ -79,6 +81,20 @@
           <artifactId>netty-transport-native-kqueue</artifactId>
           <version>${project.version}</version>
           <classifier>${jni.classifier}</classifier>
+          <scope>compile</scope>
+        </dependency>
+        <!-- Needed to test shading of netty-tcnative -->
+        <dependency>
+          <groupId>${project.groupId}</groupId>
+          <artifactId>netty-handler</artifactId>
+          <version>${project.version}</version>
+          <scope>compile</scope>
+        </dependency>
+        <dependency>
+          <groupId>${project.groupId}</groupId>
+          <artifactId>${tcnative.artifactId}</artifactId>
+          <version>${tcnative.version}</version>
+          <classifier>${tcnative.classifier}</classifier>
           <scope>compile</scope>
         </dependency>
       </dependencies>
@@ -89,6 +105,7 @@
             <artifactId>maven-shade-plugin</artifactId>
             <executions>
               <execution>
+                <id>shade</id>
                 <phase>package</phase>
                 <goals>
                   <goal>shade</goal>
@@ -103,6 +120,26 @@
                     <relocation>
                       <pattern>${shadedPackagePrefix}</pattern>
                       <shadedPattern>${shadingPrefix}.${shadedPackagePrefix}</shadedPattern>
+                    </relocation>
+                  </relocations>
+                </configuration>
+              </execution>
+              <execution>
+                <id>shade-1</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>shade</goal>
+                </goals>
+                <configuration>
+                  <artifactSet>
+                    <includes>
+                      <include>${project.groupId}</include>
+                    </includes>
+                  </artifactSet>
+                  <relocations>
+                    <relocation>
+                      <pattern>${shadedPackagePrefix}</pattern>
+                      <shadedPattern>${shadingPrefix2}.${shadedPackagePrefix}</shadedPattern>
                     </relocation>
                   </relocations>
                 </configuration>
@@ -126,10 +163,20 @@
                         <include name="${jarName}" />
                       </fileset>
                     </unzip>
-                    <move file="${classesShadedNativeDir}/lib${nativeLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix}_${nativeLib}" />
-                    <jar destfile="${project.build.directory}/${jarName}"
-                         basedir="${classesShadedDir}"/>
-                    <delete dir="${classesShadedDir}"/>
+                    <copy file="${classesShadedNativeDir}/lib${nativeTransportLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix}_${nativeTransportLib}" />
+                    <copy file="${classesShadedNativeDir}/lib${nativeTransportLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix2}_${nativeTransportLib}" />
+                    <delete file="${classesShadedNativeDir}/lib${nativeTransportLib}" />
+
+                    <condition property="nativeTcnativeLib" value="netty_tcnative_osx_${os.detected.arch}.jnilib" else="netty_tcnative.jnilib">
+                      <equals arg1="${tcnative.classifier}" arg2="" />
+                    </condition>
+
+                    <copy file="${classesShadedNativeDir}/lib${nativeTcnativeLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix}_${nativeTcnativeLib}" />
+                    <copy file="${classesShadedNativeDir}/lib${nativeTcnativeLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix2}_${nativeTcnativeLib}" />
+                    <delete file="${classesShadedNativeDir}/lib${nativeTcnativeLib}" />
+
+                    <jar destfile="${project.build.directory}/${jarName}" basedir="${classesShadedDir}" />
+                    <delete dir="${classesShadedDir}" />
                   </target>
                 </configuration>
               </execution>
@@ -141,6 +188,7 @@
             <configuration>
               <systemPropertyVariables>
                 <shadingPrefix>${shadingPrefix}</shadingPrefix>
+                <shadingPrefix2>${shadingPrefix2}</shadingPrefix2>
               </systemPropertyVariables>
             </configuration>
             <executions>
@@ -163,7 +211,7 @@
         </os>
       </activation>
       <properties>
-        <nativeLib>netty_transport_native_epoll_${os.detected.arch}.so</nativeLib>
+        <nativeTransportLib>netty_transport_native_epoll_${os.detected.arch}.so</nativeTransportLib>
       </properties>
       <dependencies>
         <dependency>
@@ -171,6 +219,20 @@
           <artifactId>netty-transport-native-epoll</artifactId>
           <version>${project.version}</version>
           <classifier>${jni.classifier}</classifier>
+          <scope>compile</scope>
+        </dependency>
+        <!-- Needed to test shading of netty-tcnative -->
+        <dependency>
+          <groupId>${project.groupId}</groupId>
+          <artifactId>netty-handler</artifactId>
+          <version>${project.version}</version>
+          <scope>compile</scope>
+        </dependency>
+        <dependency>
+          <groupId>${project.groupId}</groupId>
+          <artifactId>${tcnative.artifactId}</artifactId>
+          <version>${tcnative.version}</version>
+          <classifier>${tcnative.classifier}</classifier>
           <scope>compile</scope>
         </dependency>
       </dependencies>
@@ -181,6 +243,7 @@
             <artifactId>maven-shade-plugin</artifactId>
             <executions>
               <execution>
+                <id>shade</id>
                 <phase>package</phase>
                 <goals>
                   <goal>shade</goal>
@@ -195,6 +258,26 @@
                     <relocation>
                       <pattern>${shadedPackagePrefix}</pattern>
                       <shadedPattern>${shadingPrefix}.${shadedPackagePrefix}</shadedPattern>
+                    </relocation>
+                  </relocations>
+                </configuration>
+              </execution>
+              <execution>
+                <id>shade-1</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>shade</goal>
+                </goals>
+                <configuration>
+                  <artifactSet>
+                    <includes>
+                      <include>${project.groupId}</include>
+                    </includes>
+                  </artifactSet>
+                  <relocations>
+                    <relocation>
+                      <pattern>${shadedPackagePrefix}</pattern>
+                      <shadedPattern>${shadingPrefix2}.${shadedPackagePrefix}</shadedPattern>
                     </relocation>
                   </relocations>
                 </configuration>
@@ -218,10 +301,20 @@
                         <include name="${jarName}" />
                       </fileset>
                     </unzip>
-                    <move file="${classesShadedNativeDir}/lib${nativeLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix}_${nativeLib}" />
-                    <jar destfile="${project.build.directory}/${jarName}"
-                         basedir="${classesShadedDir}"/>
-                    <delete dir="${classesShadedDir}"/>
+                    <copy file="${classesShadedNativeDir}/lib${nativeTransportLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix}_${nativeTransportLib}" />
+                    <copy file="${classesShadedNativeDir}/lib${nativeTransportLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix2}_${nativeTransportLib}" />
+                    <delete file="${classesShadedNativeDir}/lib${nativeTransportLib}" />
+
+                    <condition property="nativeTcnativeLib" value="netty_tcnative_linux_${os.detected.arch}.so" else="netty_tcnative.so">
+                      <equals arg1="${tcnative.classifier}" arg2="" />
+                    </condition>
+
+                    <copy file="${classesShadedNativeDir}/lib${nativeTcnativeLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix}_${nativeTcnativeLib}" />
+                    <copy file="${classesShadedNativeDir}/lib${nativeTcnativeLib}" tofile="${classesShadedNativeDir}/lib${shadingPrefix2}_${nativeTcnativeLib}" />
+                    <delete file="${classesShadedNativeDir}/lib${nativeTcnativeLib}" />
+
+                    <jar destfile="${project.build.directory}/${jarName}" basedir="${classesShadedDir}" />
+                    <delete dir="${classesShadedDir}" />
                   </target>
                 </configuration>
               </execution>
@@ -233,6 +326,7 @@
             <configuration>
               <systemPropertyVariables>
                 <shadingPrefix>${shadingPrefix}</shadingPrefix>
+                <shadingPrefix2>${shadingPrefix2}</shadingPrefix2>
               </systemPropertyVariables>
             </configuration>
             <executions>

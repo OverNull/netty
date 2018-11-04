@@ -16,21 +16,35 @@
 package io.netty.testsuite.shading;
 
 import io.netty.util.internal.PlatformDependent;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.lang.reflect.Method;
 
 public class ShadingIT {
 
+    private static final String SHADING_PREFIX = System.getProperty("shadingPrefix2");
+    private static final String SHADING_PREFIX2 = System.getProperty("shadingPrefix");
+
     @Test
-    public void testShadingNativeLibs() throws Exception {
-        String shadingPrefix = System.getProperty("shadingPrefix");
-        final Class<?> clazz = Class.forName(shadingPrefix + '.' + className());
-        Method method = clazz.getMethod("ensureAvailability");
-        method.invoke(null);
+    public void testShadingNativeTransport() throws Exception {
+        String className = PlatformDependent.isOsx() ?
+                "io.netty.channel.kqueue.KQueue" : "io.netty.channel.epoll.Epoll";
+        testShading0(SHADING_PREFIX, className);
+        testShading0(SHADING_PREFIX2, className);
     }
 
-    private static String className() {
-        return PlatformDependent.isOsx() ? "io.netty.channel.kqueue.KQueue" : "io.netty.channel.epoll.Epoll";
+    @Ignore("Figure out why this sometimes fail on the CI")
+    @Test
+    public void testShadingTcnative() throws Exception {
+        String className = "io.netty.handler.ssl.OpenSsl";
+        testShading0(SHADING_PREFIX, className);
+        testShading0(SHADING_PREFIX2, className);
+    }
+
+    private static void testShading0(String shadingPrefix, String classname) throws Exception {
+        final Class<?> clazz = Class.forName(shadingPrefix + '.' + classname);
+        Method method = clazz.getMethod("ensureAvailability");
+        method.invoke(null);
     }
 }
